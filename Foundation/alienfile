@@ -1,0 +1,95 @@
+use alienfile;
+use Cwd 'abs_path';
+
+if ($ENV{OPENCASCADE_SOURCE_TARBALL}) {
+   $ENV{OPENCASCADE_SOURCE_TARBALL}= abs_path($ENV{OPENCASCADE_SOURCE_TARBALL});
+}
+
+meta_prop->{destdir_filter}= get_files_regex('debian-libocct-foundation-dev.install');
+
+probe ['pkg-config --exists libocct'];
+
+sys {
+   gather [
+      [ 'pkg-config --modversion libocct', \'%{.runtime.version}' ],
+      [ 'pkg-config --cflags     libocct', \'%{.runtime.cflags}'  ],
+      [ 'pkg-config --libs       libocct', \'%{.runtime.libs}'    ],
+   ];
+};
+
+share {
+   plugin 'Build::CMake';
+
+   my $version= '7.6.0';
+   start_url "https://dev.opencascade.org/system/files/occt/OCC_7.6.0_release/opencascade-$version.tgz";
+   download sub {
+      my $build= shift;
+      my $srcfile= $ENV{OPENCASCADE_SOURCE_TARBALL};
+      unless ($srcfile) {
+         die "\n  Please manually download the file opencascade-7.*.*.tgz\n"
+           . "  and then specify its location with the environment variable\n"
+           . "  OPENCASCADE_SOURCCE_TARBALL=...\n"
+           . "  This is necessary because OpenCASCADE requires a (free) login\n"
+           . "  to get access to the downloads.\n"
+           . "\n"
+           . "  But also, the download is huge (200M) and used by multiple\n"
+           . "  modules (because likely only a piece of occt is needed)\n"
+           . "  so downloading manually lets them all share it.\n\n"
+      }
+      -e $srcfile
+         or die "No such file: '$srcfile'";
+      ($srcfile =~ m|([^/]+)$|)
+         or die "Can't calculate basename from '$srcfile'";
+      symlink($srcfile, $1)
+         or die "symlink('$srcfile' -> '$1'): $!";
+      1;
+   };
+   extract [ 'tar xf %{.install.download}' ];
+   
+   my @opts= qw(
+      -Wno-dev
+      -DBUILD_LIBRARY_TYPE:STRING=Static
+      -DBUILD_MODULE_ApplicationFramework:BOOL=FALSE
+      -DBUILD_MODULE_DataExchange:BOOL=FALSE
+      -DBUILD_MODULE_Draw:BOOL=FALSE
+      -DBUILD_MODULE_ModelingAlgorithms:BOOL=FALSE
+      -DBUILD_MODULE_ModelingData:BOOL=FALSE
+      -DBUILD_MODULE_Visualization:BOOL=FALSE
+   );
+   build [
+      [ '%{cmake}', @{ meta->prop->{plugin_build_cmake}{args} },
+         @opts,
+        '%{.install.extract}'
+      ],
+      [ '%{make} -j 10' ],
+      [ '%{make} install' ],
+   ];
+   gather sub {
+      my $build= shift;
+      my $prefix= $build->runtime_prop->{prefix};
+      $build->runtime_prop->{cflags}= "-I$prefix/include";
+      $build->runtime_prop->{libs}=   "-L$prefix/lib -lTKernel -lTKMath";
+      $build->runtime_prop->{version}= $version;
+   };
+};
+
+sub slurp_relative {
+   my $name= shift;
+   my $path= -f $name? "./$name"
+      : do { (my $x= __FILE__) =~ s,[^/]+$,$name,; $x };
+   open my $in, '<', $path or die "open($path): $!";
+   <$in>
+}
+
+sub get_files_regex {
+   my $listfile= shift;
+   chomp(my @files= grep /^\s*[^#]/, slurp_relative($listfile));
+   for my $pattern (@files) {
+      # Remove usr/ prefix from everything
+      $pattern =~ s,^usr/,,;
+      # convert shell-glob '*' to regex, while escaping everything else
+      my @parts= split /\*/, $pattern, -1;
+      $pattern= join '[^/]+?', map quotemeta, @parts;
+   }
+   return qr/^( @{[ join '|', @files ]} )$/x
+}
