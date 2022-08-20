@@ -5,8 +5,8 @@ use File::Spec::Functions 'splitpath';
 
 my $env_source_tarball= defined $ENV{OPENCASCADE_SOURCE_TARBALL}? abs_path($ENV{OPENCASCADE_SOURCE_TARBALL}) : undef;
 my $env_build_dir=      defined $ENV{OPENCASCADE_BUILD_DIR}? abs_path($ENV{OPENCASCADE_BUILD_DIR}) : undef;
-
-meta_prop->{destdir_filter}= get_files_regex('debian-libocct-foundation-dev.install');
+my @install_files=      read_debian_file_list('debian-libocct-foundation-dev.install');
+meta_prop->{destdir_filter}= get_file_glob_regex(@install_files);
 meta_prop->{out_of_source}= 0;
 
 probe ['pkg-config --exists libocct'];
@@ -116,8 +116,9 @@ TXT
    gather sub {
       my $build= shift;
       my $prefix= $build->runtime_prop->{prefix};
+      my @libs= map m,lib/lib(\w+),g, @install_files;
       $build->runtime_prop->{cflags}= "-I$prefix/include -I$prefix/include/opencascade";
-      $build->runtime_prop->{libs}=   "-L$prefix/lib -lTKernel -lTKMath";
+      $build->runtime_prop->{libs}= join ' ', "-L$prefix/lib", map "-l$_", @libs;
       $build->runtime_prop->{version}= $version;
    };
 };
@@ -130,12 +131,17 @@ sub slurp_relative {
    <$in>
 }
 
-sub get_files_regex {
+sub read_debian_file_list {
    my $listfile= shift;
    chomp(my @files= grep /^\s*[^#]/, slurp_relative($listfile));
+   # Remove usr/ prefix from everything
+   $_ =~ s,^usr/,, for @files;
+   @files;
+}
+
+sub get_file_glob_regex {
+   my @files= @_;
    for my $pattern (@files) {
-      # Remove usr/ prefix from everything
-      $pattern =~ s,^usr/,,;
       # convert shell-glob '*' to regex, while escaping everything else
       my @parts= split /\*/, $pattern, -1;
       $pattern= join '[^/]+?', map quotemeta, @parts;
