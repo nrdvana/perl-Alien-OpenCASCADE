@@ -1,0 +1,150 @@
+use alienfile;
+use Cwd 'abs_path';
+use Digest::SHA;
+use File::Spec::Functions 'splitpath';
+
+my $env_source_tarball= defined $ENV{OPENCASCADE_SOURCE_TARBALL}? abs_path($ENV{OPENCASCADE_SOURCE_TARBALL}) : undef;
+my $env_build_dir=      defined $ENV{OPENCASCADE_BUILD_DIR}? abs_path($ENV{OPENCASCADE_BUILD_DIR}) : undef;
+my @install_files=      read_debian_file_list('debian-libocct-modeling-data-dev.install');
+meta_prop->{destdir_filter}= get_file_glob_regex(@install_files);
+meta_prop->{out_of_source}= 0;
+
+probe ['pkg-config --exists libocct'];
+
+sys {
+   gather [
+      [ 'pkg-config --modversion libocct', \'%{.runtime.version}' ],
+      [ 'pkg-config --cflags     libocct', \'%{.runtime.cflags}'  ],
+      [ 'pkg-config --libs       libocct', \'%{.runtime.libs}'    ],
+   ];
+};
+
+share {
+   plugin 'Build::CMake';
+
+   my $version= '7.6.0';
+   my $origin_url= "https://dev.opencascade.org/system/files/occt/OCC_7.6.0_release/opencascade-$version.tgz";
+   my $src_sha1= !$env_source_tarball? undef
+      : Digest::SHA->new->addfile($env_source_tarball)->hexdigest;
+
+   start_url($env_source_tarball? "file://$env_source_tarball" : $origin_url);
+
+   download sub {
+      my $build= shift;
+      if ($env_source_tarball) {
+         symlink($env_source_tarball, (splitpath $env_source_tarball)[2])
+            or die "symlink: $!";
+      } else {
+         die <<'TXT';
+  -------------------------------------------------------------
+  
+  Please manually download the file opencascade-7.*.*.tgz
+  from https://dev.opencascade.org and then specify its
+  location with the environment variable
+  
+    export OPENCASCADE_SOURCE_TARBALL=/path/to/tgz
+  
+  This is necessary because OpenCASCADE requires a (free) login
+  to get access to the downloads.  But also, the download is
+  huge (200M) and used by multiple Alien::OpenCASCADE7 modules,
+  so downloading manually lets them all share it.
+  
+  You should also set
+  
+    export OPENCASCADE_BUILD_DIR=/tmp/opencascade
+  
+  so that subsequent builds of Alien::OpenCASCADE::ModelingData,
+  Alien::OpenCASCADE::ModelingAlgorithms, etc don't have to keep
+  re-building the earlier libraries they depend on.
+  
+  If you would rather use the libs from your distro, try
+    Debian:         apt instal libocct-foundation-dev
+    OpenSuse:       zypper install locct-devel
+    CentOS/RedHat:  (none?)
+    Windows:        Download installer from opencascade.org
+  
+  -------------------------------------------------------------
+TXT
+      }
+   };
+
+   extract( $env_build_dir?
+      sub {
+         my $build= shift;
+         mkdir "$env_build_dir";
+         mkdir "$env_build_dir/$src_sha1";
+         (my $glob)= glob "$env_build_dir/$src_sha1/opencascade*/README.txt";
+         unless ($glob) {
+            Alien::Build::CommandSequence->new(
+               [ 'tar', -C => "$env_build_dir/$src_sha1", -xf => $build->install_prop->{download} ]
+            )->execute($build);
+         }
+         my @extracted= glob "$env_build_dir/$src_sha1/opencascade*";
+         @extracted == 1 or die "Missing/ambiguous opencascade source directory in $env_build_dir/$src_sha1";
+         $build->install_prop->{extract}= $extracted[0];
+         my $basename= (splitpath $extracted[0])[2];
+         symlink($extracted[0], $basename) or die "symlink: $!";
+      }
+      : [ 'tar xf %{.install.download}' ]
+   );
+   
+   my @opts= qw(
+      -Wno-dev
+      -DBUILD_LIBRARY_TYPE:STRING=Static
+      -DBUILD_MODULE_ApplicationFramework:BOOL=FALSE
+      -DBUILD_MODULE_DataExchange:BOOL=FALSE
+      -DBUILD_MODULE_Draw:BOOL=FALSE
+      -DBUILD_MODULE_ModelingAlgorithms:BOOL=FALSE
+      -DBUILD_MODULE_ModelingData:BOOL=TRUE
+      -DBUILD_MODULE_Visualization:BOOL=FALSE
+   );
+   build [
+      sub {
+         my $build= shift;
+         my @cmd= ('%{cmake}', @{ meta->prop->{plugin_build_cmake}{args} }, @opts, '%{.install.extract}');
+         if ($env_build_dir && -f './CMakeCache.txt') {
+            # This is the magic that allows us to re-use previous compiles, even if
+            # the @opts have changed.  CMake special-cases '.' even though it is
+            # the same directory as .install.extract
+            $cmd[-1]= '.';
+         }
+         Alien::Build::CommandSequence->new(\@cmd)->execute($build);
+      },
+      [ '%{make}', -j => 10 ],
+      [ '%{make}', 'install' ],
+   ];
+   gather sub {
+      my $build= shift;
+      my $prefix= $build->runtime_prop->{prefix};
+      my @libs= map m,lib/lib(\w+),g, @install_files;
+      $build->runtime_prop->{cflags}= "-I$prefix/include -I$prefix/include/opencascade";
+      $build->runtime_prop->{libs}= join ' ', "-L$prefix/lib", map "-l$_", @libs;
+      $build->runtime_prop->{version}= $version;
+   };
+};
+
+sub slurp_relative {
+   my $name= shift;
+   my $path= -f $name? "./$name"
+      : do { (my $x= __FILE__) =~ s,[^/]+$,$name,; $x };
+   open my $in, '<', $path or die "open($path): $!";
+   <$in>
+}
+
+sub read_debian_file_list {
+   my $listfile= shift;
+   chomp(my @files= grep /^\s*[^#]/, slurp_relative($listfile));
+   # Remove usr/ prefix from everything
+   $_ =~ s,^usr/,, for @files;
+   @files;
+}
+
+sub get_file_glob_regex {
+   my @files= @_;
+   for my $pattern (@files) {
+      # convert shell-glob '*' to regex, while escaping everything else
+      my @parts= split /\*/, $pattern, -1;
+      $pattern= join '[^/]+?', map quotemeta, @parts;
+   }
+   return qr/^( @{[ join '|', @files ]} )$/x
+}
