@@ -26,15 +26,27 @@ share {
       my $build= shift;
       my $srcfile= $ENV{OPENCASCADE_SOURCE_TARBALL};
       unless ($srcfile) {
-         die "\n  Please manually download the file opencascade-7.*.*.tgz\n"
-           . "  and then specify its location with the environment variable\n"
-           . "  OPENCASCADE_SOURCCE_TARBALL=...\n"
-           . "  This is necessary because OpenCASCADE requires a (free) login\n"
-           . "  to get access to the downloads.\n"
-           . "\n"
-           . "  But also, the download is huge (200M) and used by multiple\n"
-           . "  modules (because likely only a piece of occt is needed)\n"
-           . "  so downloading manually lets them all share it.\n\n"
+         die <<'TXT';
+  -------------------------------------------------------------
+  
+  Please manually download the file opencascade-7.*.*.tgz
+  and then specify its location with the environment variable
+  
+    OPENCASCADE_SOURCCE_TARBALL=/path/to/tgz
+  
+  This is necessary because OpenCASCADE requires a (free) login
+  to get access to the downloads.  But also, the download is
+  huge (200M) and used by multiple Alien::OpenCASCADE7 modules,
+  so downloading manually lets them all share it.
+  
+  If you would rather use the libs from your distro, try
+    Debian:         apt instal libocct-foundation-dev
+    OpenSuse:       zypper install locct-devel
+	CentOS/RedHat:  (none?)
+	Windows:        Download installer from opencascade.org
+  
+  -------------------------------------------------------------
+TXT
       }
       -e $srcfile
          or die "No such file: '$srcfile'";
