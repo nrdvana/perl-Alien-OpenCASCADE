@@ -1,11 +1,13 @@
 use alienfile;
 use Cwd 'abs_path';
+use Digest::SHA;
+use File::Spec::Functions 'splitpath';
 
-if ($ENV{OPENCASCADE_SOURCE_TARBALL}) {
-   $ENV{OPENCASCADE_SOURCE_TARBALL}= abs_path($ENV{OPENCASCADE_SOURCE_TARBALL});
-}
+my $env_source_tarball= defined $ENV{OPENCASCADE_SOURCE_TARBALL}? abs_path($ENV{OPENCASCADE_SOURCE_TARBALL}) : undef;
+my $env_build_dir=      defined $ENV{OPENCASCADE_BUILD_DIR}? abs_path($ENV{OPENCASCADE_BUILD_DIR}) : undef;
 
 meta_prop->{destdir_filter}= get_files_regex('debian-libocct-foundation-dev.install');
+meta_prop->{out_of_source}= 0;
 
 probe ['pkg-config --exists libocct'];
 
@@ -21,42 +23,70 @@ share {
    plugin 'Build::CMake';
 
    my $version= '7.6.0';
-   start_url "https://dev.opencascade.org/system/files/occt/OCC_7.6.0_release/opencascade-$version.tgz";
+   my $origin_url= "https://dev.opencascade.org/system/files/occt/OCC_7.6.0_release/opencascade-$version.tgz";
+   my $src_sha1= !$env_source_tarball? undef
+      : Digest::SHA->new->addfile($env_source_tarball)->hexdigest;
+
+   start_url($env_source_tarball? "file://$env_source_tarball" : $origin_url);
+
    download sub {
       my $build= shift;
-      my $srcfile= $ENV{OPENCASCADE_SOURCE_TARBALL};
-      unless ($srcfile) {
+      if ($env_source_tarball) {
+         symlink($env_source_tarball, (splitpath $env_source_tarball)[2])
+            or die "symlink: $!";
+      } else {
          die <<'TXT';
   -------------------------------------------------------------
   
   Please manually download the file opencascade-7.*.*.tgz
-  and then specify its location with the environment variable
+  from https://dev.opencascade.org and then specify its
+  location with the environment variable
   
-    OPENCASCADE_SOURCCE_TARBALL=/path/to/tgz
+    export OPENCASCADE_SOURCE_TARBALL=/path/to/tgz
   
   This is necessary because OpenCASCADE requires a (free) login
   to get access to the downloads.  But also, the download is
   huge (200M) and used by multiple Alien::OpenCASCADE7 modules,
   so downloading manually lets them all share it.
   
+  You should also set
+  
+    export OPENCASCADE_BUILD_DIR=/tmp/opencascade
+  
+  so that subsequent builds of Alien::OpenCASCADE::ModelingData,
+  Alien::OpenCASCADE::ModelingAlgorithms, etc don't have to keep
+  re-building the earlier libraries they depend on.
+  
   If you would rather use the libs from your distro, try
     Debian:         apt instal libocct-foundation-dev
     OpenSuse:       zypper install locct-devel
-	CentOS/RedHat:  (none?)
-	Windows:        Download installer from opencascade.org
+    CentOS/RedHat:  (none?)
+    Windows:        Download installer from opencascade.org
   
   -------------------------------------------------------------
 TXT
       }
-      -e $srcfile
-         or die "No such file: '$srcfile'";
-      ($srcfile =~ m|([^/]+)$|)
-         or die "Can't calculate basename from '$srcfile'";
-      symlink($srcfile, $1)
-         or die "symlink('$srcfile' -> '$1'): $!";
-      1;
    };
-   extract [ 'tar xf %{.install.download}' ];
+
+   extract( $env_build_dir?
+      sub {
+         my $build= shift;
+         mkdir "$env_build_dir";
+         mkdir "$env_build_dir/$src_sha1";
+         (my $glob)= glob "$env_build_dir/$src_sha1/opencascade*/README.txt";
+         unless ($glob) {
+            Alien::Build::CommandSequence->new(
+               [ 'tar', -C => "$env_build_dir/$src_sha1", -xf => $build->install_prop->{download} ]
+            )->execute($build);
+         }
+         my @extracted= glob "$env_build_dir/$src_sha1/opencascade*";
+         @extracted == 1 or die "Missing/ambiguous opencascade source directory in $env_build_dir/$src_sha1";
+         $build->install_prop->{extract}= $extracted[0];
+         my $basename= (splitpath $extracted[0])[2];
+         symlink($extracted[0], $basename) or die "symlink: $!";
+      }
+      : [ 'tar xf %{.install.download}' ]
+   );
    
    my @opts= qw(
       -Wno-dev
@@ -69,17 +99,24 @@ TXT
       -DBUILD_MODULE_Visualization:BOOL=FALSE
    );
    build [
-      [ '%{cmake}', @{ meta->prop->{plugin_build_cmake}{args} },
-         @opts,
-        '%{.install.extract}'
-      ],
-      [ '%{make} -j 10' ],
-      [ '%{make} install' ],
+      sub {
+         my $build= shift;
+         my @cmd= ('%{cmake}', @{ meta->prop->{plugin_build_cmake}{args} }, @opts, '%{.install.extract}');
+         if ($env_build_dir && -f './CMakeCache.txt') {
+            # This is the magic that allows us to re-use previous compiles, even if
+            # the @opts have changed.  CMake special-cases '.' even though it is
+            # the same directory as .install.extract
+            $cmd[-1]= '.';
+         }
+         Alien::Build::CommandSequence->new(\@cmd)->execute($build);
+      },
+      [ '%{make}', -j => 10 ],
+      [ '%{make}', 'install' ],
    ];
    gather sub {
       my $build= shift;
       my $prefix= $build->runtime_prop->{prefix};
-      $build->runtime_prop->{cflags}= "-I$prefix/include";
+      $build->runtime_prop->{cflags}= "-I$prefix/include -I$prefix/include/opencascade";
       $build->runtime_prop->{libs}=   "-L$prefix/lib -lTKernel -lTKMath";
       $build->runtime_prop->{version}= $version;
    };
