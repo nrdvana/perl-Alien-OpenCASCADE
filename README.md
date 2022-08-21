@@ -36,8 +36,8 @@ build tree.
 To solve this problem, this collection of modules allows you to
 set environment variables:
 
-  OPENCASCADE_SOURCE_TARBALL=...
-  OPENCASCADE_BUILD_DIR=...
+    OPENCASCADE_SOURCE_TARBALL=...
+    OPENCASCADE_BUILD_DIR=...
 
 so that the source code only downloads once and the individual
 libraries only get built once, cumulatively building in the same
@@ -47,9 +47,9 @@ As a guard against future versions of this library, I decided to
 include the major version in the name published on CPAN.  So the
 names you install would be
 
-  cpanm Alien::OpenCASCADE7::Foundation
-  cpanm Alien::OpenCASCADE7::ModelingData
-  cpanm Alien::OpenCASCADE7::ModelingAlgorithms
+    cpanm Alien::OpenCASCADE7::Foundation
+    cpanm Alien::OpenCASCADE7::ModelingData
+    cpanm Alien::OpenCASCADE7::ModelingAlgorithms
 
 (the bundling of these libraries is not complete)
 (patches welcome)
